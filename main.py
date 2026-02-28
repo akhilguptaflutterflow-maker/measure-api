@@ -6,13 +6,13 @@ import numpy as np
 
 app = FastAPI()
 
-# ---------------- INPUT MODEL ----------------
+# ---------------- INPUT ----------------
 class ImageData(BaseModel):
     image: str
     pixel_per_inch: float
 
 
-# ---------------- BASE64 HELPERS ----------------
+# ---------------- BASE64 ----------------
 def decode_image(base64_str):
     header_removed = base64_str.split(",")[-1]
     img_bytes = base64.b64decode(header_removed)
@@ -24,22 +24,17 @@ def encode_image(img):
     return "data:image/jpeg;base64," + base64.b64encode(buffer).decode('utf-8')
 
 
-# ---------------- CLOTH SEGMENT (ROBUST) ----------------
+# ---------------- SEGMENT CLOTH (EDGE BASED - STRONG) ----------------
 def segment_cloth(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (7,7), 0)
+    blur = cv2.GaussianBlur(gray,(5,5),0)
 
-    thresh = cv2.adaptiveThreshold(
-        blur,255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        11,2
-    )
+    edges = cv2.Canny(blur, 40, 120)
 
-    kernel = np.ones((7,7),np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    kernel = np.ones((5,5), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=2)
 
-    contours,_ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours,_ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
         return None, None
@@ -47,18 +42,25 @@ def segment_cloth(img):
     largest = max(contours, key=cv2.contourArea)
 
     mask = np.zeros_like(gray)
-    cv2.drawContours(mask,[largest],-1,255,-1)
+    cv2.drawContours(mask, [largest], -1, 255, -1)
 
     x,y,w,h = cv2.boundingRect(largest)
+
     return mask,(x,y,w,h)
 
 
-# ---------------- WIDTH AT ROW ----------------
+# ---------------- WIDTH AT ROW (GAP FILL) ----------------
 def width_at_y(mask, y):
     row = mask[y]
+
+    # fill gaps in waistband area
+    kernel = np.ones((1,25), np.uint8)
+    row = cv2.dilate(row.reshape(1,-1), kernel, iterations=1)[0]
+
     xs = np.where(row > 0)[0]
     if len(xs) < 2:
         return 0
+
     return xs[-1] - xs[0]
 
 
@@ -74,14 +76,13 @@ def measure(data: ImageData):
     mask, box = segment_cloth(img)
 
     if mask is None:
-        return {"error": "Cloth not detected properly"}
+        return {"error": "Cloth not detected"}
 
     cx, cy, cw, ch = box
-
     top = cy
 
-    # sample rows
-    waist_y  = int(top + ch*0.03)
+    # 👇 UPDATED ROW POSITIONS (FIXED)
+    waist_y  = int(top + ch*0.08)
     hip_y    = int(top + ch*0.30)
     bottom_y = int(top + ch*0.95)
 
@@ -92,7 +93,7 @@ def measure(data: ImageData):
 
     ppi = data.pixel_per_inch
 
-    # flat garment correction ×2
+    # 👇 flat garment multiply ×2
     waist_in  = (waist_px / ppi) * 2
     hip_in    = (hip_px / ppi) * 2
     bottom_in = (bottom_px / ppi) * 2
