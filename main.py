@@ -27,7 +27,9 @@ def encode_image(img):
     return f"data:image/jpeg;base64,{base64_img}"
 
 
-# ---------- CARD DETECTION ----------
+# =========================================================
+# 🔥 ROBUST CARD DETECTION (FIXED VERSION)
+# =========================================================
 def find_card(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray,(5,5),0)
@@ -36,50 +38,68 @@ def find_card(image):
     contours,_ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     best = None
-    best_ratio_diff = 999
+    best_score = 999
+
+    img_area = image.shape[0] * image.shape[1]
 
     for cnt in contours:
         x,y,w,h = cv2.boundingRect(cnt)
-        ratio = w/h if h>0 else 0
-        diff = abs(ratio - 1.586)
 
-        # FILTER SIZE + RATIO
-        if diff < 0.3 and 200 < w < 600 and 100 < h < 400:
+        area = w*h
+        if area < img_area * 0.001:
+            continue
+
+        ratio = w/h if h>0 else 0
+        ratio_diff = abs(ratio - 1.586)
+
+        # combined score
+        score = ratio_diff + (1/(area+1))
+
+        if score < best_score:
+            best_score = score
             best = (x,y,w,h)
-            best_ratio_diff = diff
 
     return best
 
 
-# ---------- CLOTH DETECTION ----------
+# =========================================================
+# 🔥 IMPROVED CLOTH DETECTION
+# =========================================================
 def find_cloth(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray,(5,5),0)
 
+    # threshold to separate cloth from background
     thresh = cv2.threshold(blur, 200, 255, cv2.THRESH_BINARY_INV)[1]
 
     contours,_ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     big_contours = [c for c in contours if cv2.contourArea(c) > 50000]
 
-    largest = max(big_contours, key=cv2.contourArea)
+    if not big_contours:
+        # fallback to biggest contour anyway
+        largest = max(contours, key=cv2.contourArea)
+    else:
+        largest = max(big_contours, key=cv2.contourArea)
 
     x,y,w,h = cv2.boundingRect(largest)
     return (x,y,w,h)
 
 
-# ---------- DRAW OVERLAY ----------
+# =========================================================
+# DRAW OVERLAY
+# =========================================================
 def draw_overlay(image, card_box, cloth_box):
     img = image.copy()
 
-    # CARD
+    # CARD BOX (GREEN)
     if card_box is not None:
         x,y,w,h = card_box
         cv2.rectangle(img, (x,y), (x+w, y+h), (0,255,0), 3)
         cv2.putText(img, "CARD", (x, y-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
 
-    # CLOTH
+    # CLOTH BOX (BLUE)
     if cloth_box is not None:
         x,y,w,h = cloth_box
         cv2.rectangle(img, (x,y), (x+w, y+h), (255,0,0), 3)
@@ -89,24 +109,26 @@ def draw_overlay(image, card_box, cloth_box):
     return img
 
 
-# ---------- API ----------
+# =========================================================
+# MAIN API
+# =========================================================
 @app.post("/measure")
 def measure(data: ImageData):
 
     img = decode_image(data.image)
 
-    # detect
+    # detect objects
     card = find_card(img)
     cloth = find_cloth(img)
 
     if card is None:
         return {"error": "Card not detected"}
 
-    # ---------- SCALE ----------
+    # -------- SCALE --------
     x,y,w,h = card
     pixel_per_inch = w / 3.37
 
-    # ---------- CLOTH SIZE ----------
+    # -------- CLOTH SIZE --------
     cx,cy,cw,ch = cloth
 
     width_in = cw / pixel_per_inch
@@ -115,11 +137,11 @@ def measure(data: ImageData):
     size_width = width_in * 2
     size_height = height_in * 2
 
-    # ---------- OVERLAY IMAGE ----------
+    # -------- OVERLAY IMAGE --------
     overlay_img = draw_overlay(img, card, cloth)
     overlay_base64 = encode_image(overlay_img)
 
-    # ---------- RESPONSE ----------
+    # -------- RESPONSE --------
     return {
         "pixel_per_inch": round(pixel_per_inch,2),
 
